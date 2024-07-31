@@ -127,6 +127,8 @@ os.makedirs(BACKUP_DIR, exist_ok=True)
 result = subprocess.run(["mysql", "-u", MYSQL_USER, "-e", "SHOW DATABASES;"], capture_output=True, text=True)
 databases = [db for db in result.stdout.split() if db not in EXCLUDE_DB and db != "Database"]
 
+exit_status = 0
+
 # Backup each database
 for db in databases:
     filename = f"{db}.sql.gz"
@@ -134,11 +136,19 @@ for db in databases:
 
     # Dump the database and gzip it
     with open(full_path, "wb") as f:
-        dump_result = subprocess.run(["mysqldump", "-u", MYSQL_USER, "--databases", db], stdout=subprocess.PIPE, text=True)
-        gzip_result = subprocess.run(["gzip"], input=dump_result.stdout.encode(), stdout=f)
+        dump_result = subprocess.run(["mysqldump", "-u", MYSQL_USER, "--databases", db], stdout=subprocess.PIPE)
+        gzip_result = subprocess.run(["gzip"], input=dump_result.stdout, stdout=f)
 
     # Upload to S3
-    subprocess.run(["aws", "s3", "cp", full_path, f"s3://{BUCKET_NAME}/{DEST_FOLDER}/{DATE}/{TIME}/{filename}", "--profile", PROFILE])
+    if OUTPUT:
+        upload_result = subprocess.run(["aws", "s3", "cp", full_path, f"s3://{BUCKET_NAME}/{DEST_FOLDER}/{DATE}/{TIME}/{filename}", "--profile", PROFILE], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    else:
+        upload_result = subprocess.run(["aws", "s3", "cp", full_path, f"s3://{BUCKET_NAME}/{DEST_FOLDER}/{DATE}/{TIME}/{filename}", "--profile", PROFILE], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+
+    # Check for errors in the upload process
+    if upload_result.returncode != 0:
+        sys.stderr.write(upload_result.stderr.decode())
+        exit_status = -1
 
     # Remove local file after upload
     os.remove(full_path)
@@ -168,5 +178,8 @@ for folder in existing_folders:
             }
         )
 
-if OUTPUT:
+if OUTPUT and exit_status == 0:
     print(f"Well done for {BUCKET_NAME}/{DEST_FOLDER}")
+
+sys.exit(exit_status)
+
