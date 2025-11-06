@@ -3,7 +3,7 @@
 import os
 import subprocess
 import boto3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import re
 import argparse
 import sys
@@ -84,16 +84,16 @@ parser = argparse.ArgumentParser(
     description="Backup MySQL/MariaDB databases to AWS S3 with retention policy.",
     epilog="""
 Examples:
-  ./backup_db_to_s3.py --bucket my-backup-bucket --profile myprofile
+  ./de-stash-dump2s3.py --bucket my-backup-bucket --profile myprofile
     Basic usage with required bucket name and profile.
 
-  ./backup_db_to_s3.py --bucket my-backup-bucket --profile myprofile --output
+  ./de-stash-dump2s3.py --bucket my-backup-bucket --profile myprofile --output
     Specify output message on success.
 
-  ./backup_db_to_s3.py --bucket my-backup-bucket --profile myprofile --user myuser
+  ./de-stash-dump2s3.py --bucket my-backup-bucket --profile myprofile --user myuser
     Set a different MySQL user.
 
-  ./backup_db_to_s3.py --bucket my-backup-bucket --profile myprofile --exclude "information_schema performance_schema mysql sys test_db"
+  ./de-stash-dump2s3.py --bucket my-backup-bucket --profile myprofile --exclude "information_schema performance_schema mysql sys test_db"
     Exclude specific databases.
 """,
     formatter_class=argparse.RawTextHelpFormatter
@@ -115,8 +115,11 @@ MYSQL_USER = args.user
 EXCLUDE_DB = args.exclude.split()
 OUTPUT = args.output
 
-DATE = datetime.utcnow().strftime("%Y-%m-%d")
-TIME = datetime.utcnow().strftime("%H-%M")
+# Use timezone-aware UTC instead of deprecated datetime.utcnow()
+now_utc = datetime.now(timezone.utc)
+DATE = now_utc.strftime("%Y-%m-%d")
+TIME = now_utc.strftime("%H-%M")
+
 TMP_FOLDER = "/tmp"
 BACKUP_DIR = f"{TMP_FOLDER}/{DATE}/{TIME}"
 
@@ -140,10 +143,14 @@ for db in databases:
         gzip_result = subprocess.run(["gzip"], input=dump_result.stdout, stdout=f)
 
     # Upload to S3
-    if OUTPUT:
-        upload_result = subprocess.run(["aws", "s3", "cp", full_path, f"s3://{BUCKET_NAME}/{DEST_FOLDER}/{DATE}/{TIME}/{filename}", "--profile", PROFILE], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-    else:
-        upload_result = subprocess.run(["aws", "s3", "cp", full_path, f"s3://{BUCKET_NAME}/{DEST_FOLDER}/{DATE}/{TIME}/{filename}", "--profile", PROFILE], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    upload_cmd = [
+        "aws", "s3", "cp",
+        full_path,
+        f"s3://{BUCKET_NAME}/{DEST_FOLDER}/{DATE}/{TIME}/{filename}",
+        "--profile", PROFILE,
+    ]
+
+    upload_result = subprocess.run(upload_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 
     # Check for errors in the upload process
     if upload_result.returncode != 0:
@@ -171,10 +178,16 @@ keep_folders = set(keep_dates)
 # Filter and delete old backups
 for folder in existing_folders:
     if folder not in keep_folders:
-        delete_response = s3.delete_objects(
+        s3.delete_objects(
             Bucket=BUCKET_NAME,
             Delete={
-                'Objects': [{'Key': key['Key']} for key in s3.list_objects_v2(Bucket=BUCKET_NAME, Prefix=f"{DEST_FOLDER}/{folder}/").get('Contents', [])]
+                'Objects': [
+                    {'Key': key['Key']}
+                    for key in s3.list_objects_v2(
+                        Bucket=BUCKET_NAME,
+                        Prefix=f"{DEST_FOLDER}/{folder}/"
+                    ).get('Contents', [])
+                ]
             }
         )
 
